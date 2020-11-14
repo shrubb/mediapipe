@@ -40,7 +40,8 @@ constexpr char kTrackingBoxesTag[] = "TRACKING_BOXES";
 constexpr char kCancelObjectIdTag[] = "CANCEL_OBJECT_ID";
 
 // Move |src| to the back of |dst|.
-void MoveIds(std::vector<int>* dst, std::vector<int> src) {
+template <typename T>
+void MoveIds(std::vector<T>* dst, std::vector<T> src) {
   dst->insert(dst->end(), std::make_move_iterator(src.begin()),
               std::make_move_iterator(src.end()));
 }
@@ -174,7 +175,7 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
   }
 
   if (cc->Outputs().HasTag(kCancelObjectIdTag)) {
-    cc->Outputs().Tag(kCancelObjectIdTag).Set<int>();
+    cc->Outputs().Tag(kCancelObjectIdTag).Set<std::pair<int, int>>();
   }
   if (cc->Outputs().HasTag(kDetectionsTag)) {
     cc->Outputs().Tag(kDetectionsTag).Set<std::vector<Detection>>();
@@ -197,13 +198,45 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
 
 ::mediapipe::Status TrackedDetectionManagerCalculator::Process(
     CalculatorContext* cc) {
+
+  LOG(WARNING) << "### TrackedDetectionManagerCalculator called (" <<
+      (cc->Inputs().HasTag(kTrackingBoxesTag) && !cc->Inputs().Tag(kTrackingBoxesTag).IsEmpty() ? "TRACKING_BOXES" :
+      (cc->Inputs().HasTag(   kDetectionsTag) && !cc->Inputs().Tag(   kDetectionsTag).IsEmpty() ? "DETECTIONS" : "UNKNOWN"))
+      << ")";
+  {
+    std::string x = "### tracked_detection_manager_ = ";
+    for (auto & d: tracked_detection_manager_.GetAllTrackedDetections()) {
+      x += std::to_string(d.first) + " ";
+    }
+    LOG(WARNING) << x;
+  }
+  {
+    std::string x = "### waiting_for_update_detections_ = ";
+    for (auto & d: waiting_for_update_detections_) {
+      x += std::to_string(d.first) + " ";
+    }
+    LOG(WARNING) << x;
+  }
+
   if (cc->Inputs().HasTag(kTrackingBoxesTag) &&
       !cc->Inputs().Tag(kTrackingBoxesTag).IsEmpty()) {
     const TimedBoxProtoList& tracked_boxes =
         cc->Inputs().Tag(kTrackingBoxesTag).Get<TimedBoxProtoList>();
 
+    // №№№ tracked_detection_manager_: местный state-объект, который - ?
+    // №№№ waiting_for_update_detections_: боксы, пришедшие с детектора; хранятся там до первого пакета TRACKING_BOXES
+
+    // №№№ tracked_boxes: это выход BoxTrackerCalculator (по сути, streaming_motion_boxes_ с интерполяцией)
+    {
+      std::string x = "### tracked_boxes (input) = ";
+      for (const TimedBoxProto& d : tracked_boxes.box()) {
+        x += std::to_string(d.id()) + " ";
+      }
+      LOG(WARNING) << x;
+    }
+
     // Collect all detections that are removed.
-    auto removed_detection_ids = absl::make_unique<std::vector<int>>();
+    auto removed_detection_ids = absl::make_unique<std::vector<std::pair<int, int>>>(); // <detection id, its successor's id or -1>
     for (const TimedBoxProto& tracked_box : tracked_boxes.box()) {
       NormalizedRect bounding_box;
       bounding_box.set_x_center((tracked_box.left() + tracked_box.right()) /
@@ -215,6 +248,12 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
       bounding_box.set_rotation(tracked_box.rotation());
       // First check if this box updates a detection that's waiting for
       // update from the tracker.
+
+      // №№№ бокс, который пришёл с трекера: является ли он обновлением ("вкручиванием")
+      // №№№ какого-нибудь бокса, только что пришедшего с детектора (в недавнем пакете DETECTIONS)?
+      // №№№ важно: бывают
+      // №№№ 1. TrackedDetection unique_id, т.е. уникальный id на одну ДЕТЕКЦИЮ, а не на объект
+      // №№№ 2. TimedBoxProto id, т.е. уникальный id на один ОБЪЕКТ
       auto waiting_for_update_detectoin_ptr =
           waiting_for_update_detections_.find(tracked_box.id());
       if (waiting_for_update_detectoin_ptr !=
@@ -222,6 +261,17 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
         // Add the detection and remove duplicated detections.
         auto removed_ids = tracked_detection_manager_.AddDetection(
             std::move(waiting_for_update_detectoin_ptr->second));
+        {
+          std::string x =
+            "### Adding detection " + std::to_string(tracked_box.id()) + " (previous_id = " +
+            std::to_string(tracked_detection_manager_.GetTrackedDetection(tracked_box.id())->previous_id()) +
+            ") erased duplicates: ";
+          for (auto d : removed_ids) {
+            x += std::to_string(d.first) + " ";
+          }
+          LOG(WARNING) << x;
+        }
+
         MoveIds(removed_detection_ids.get(), std::move(removed_ids));
 
         waiting_for_update_detections_.erase(waiting_for_update_detectoin_ptr);
@@ -242,13 +292,13 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
     if (!removed_detection_ids->empty() &&
         cc->Outputs().HasTag(kCancelObjectIdTag)) {
       auto timestamp = cc->InputTimestamp();
-      for (int box_id : *removed_detection_ids) {
+      for (auto box_ids : *removed_detection_ids) {
         // The timestamp is incremented (by 1 us) because currently the box
         // tracker calculator only accepts one cancel object ID for any given
         // timestamp.
         cc->Outputs()
             .Tag(kCancelObjectIdTag)
-            .AddPacket(mediapipe::MakePacket<int>(box_id).At(timestamp++));
+            .AddPacket(mediapipe::MakePacket<std::pair<int, int>>(box_ids).At(timestamp++));
       }
     }
 
@@ -282,6 +332,7 @@ REGISTER_CALCULATOR(TrackedDetectionManagerCalculator);
     }
   }
 
+  // №№№ на пакете DETECTIONS тупо вписываем бокс в waiting_for_update_detections_ и пока просто ждём трекинга
   if (cc->Inputs().HasTag(kDetectionsTag) &&
       !cc->Inputs().Tag(kDetectionsTag).IsEmpty()) {
     const auto detections =

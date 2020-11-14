@@ -34,24 +34,24 @@ class TrackedDetectionManager {
 
   // Adds a new detection at a given timestamp. Returns the IDs of the
   // detections that are removed due to duplication.
-  std::vector<int> AddDetection(std::unique_ptr<TrackedDetection> detection);
+  std::vector<std::pair<int, int>> AddDetection(std::unique_ptr<TrackedDetection> detection);
 
   // Updates the location of a detection identified by its id.
   // Returns false if the requested id doesn't exist a corresponding
   // detection. Returns the IDs of the detections that are removed due to
   // duplication.
-  std::vector<int> UpdateDetectionLocation(
+  std::vector<std::pair<int, int>> UpdateDetectionLocation(
       int id, const ::mediapipe::NormalizedRect& bounding_box, int64 timestamp);
 
   // Removes detections that are not updated after |timestamp|. Returns the IDs
   // of the detections that are removed.
-  std::vector<int> RemoveObsoleteDetections(int64 timestamp);
+  std::vector<std::pair<int, int>> RemoveObsoleteDetections(int64 timestamp);
 
   // TODO: Do we really need this? Pursuit tracker doesn't do well
   // in loop closure. Boxes out of view are usually not attached to objects
   // any more when it's in view again. Returns the IDs of the
   // detections that are removed.
-  std::vector<int> RemoveOutOfViewDetections();
+  std::vector<std::pair<int, int>> RemoveOutOfViewDetections();
 
   int GetNumDetections() const { return detections_.size(); }
 
@@ -77,7 +77,7 @@ class TrackedDetectionManager {
   // Finds all detections that are duplicated with the one of |id| and remove
   // all detections except the one that is added most recently. Returns the IDs
   // of the detections that are removed.
-  std::vector<int> RemoveDuplicatedDetections(int id);
+  std::vector<std::pair<int, int>> RemoveDuplicatedDetections(int id);
 
   absl::node_hash_map<int, std::unique_ptr<TrackedDetection>> detections_;
 

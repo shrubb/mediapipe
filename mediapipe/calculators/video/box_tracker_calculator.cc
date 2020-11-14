@@ -406,7 +406,7 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
   }
 
   if (cc->Inputs().HasTag("CANCEL_OBJECT_ID")) {
-    cc->Inputs().Tag("CANCEL_OBJECT_ID").Set<int>();
+    cc->Inputs().Tag("CANCEL_OBJECT_ID").Set<std::pair<int, int>>();
   }
 
   if (cc->Inputs().HasTag("RA_TRACK")) {
@@ -566,11 +566,31 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
                                       ? &(cc->Inputs().Tag("START_POS"))
                                       : nullptr;
 
+  // №№№ fast forward пришедшую детекцию
   MotionBoxMap fast_forward_boxes;
   if (start_pos_stream && !start_pos_stream->IsEmpty()) {
     // Try to fast forward boxes to current tracking head.
     const TimedBoxProtoList& start_pos_list =
         start_pos_stream->Get<TimedBoxProtoList>();
+
+    TimedBoxProtoList tmp;
+    int i = 0;
+    for (auto tmp_box : start_pos_list.box()) {
+      if (i++ == 0) tmp_box.set_id(1);
+      *tmp.add_box() = tmp_box;
+      break;
+    }
+
+    {
+      std::string x = "### START_POS start_pos_stream has ids {";
+      for (auto & d: tmp.box()) {
+        x += std::to_string(d.id()) + " ";
+      }
+      x += "}";
+      LOG(WARNING) << x;
+    }
+
+    // №№№ !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! изменил на tmp
     FastForwardStartPos(start_pos_list, &fast_forward_boxes);
   }
 
@@ -589,6 +609,7 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
     }
   }
 
+  // №№№ то же, типа "exclusively for receiving detection results from reacquisition", но хз вообще в чём разница
   InputStream* restart_pos_stream = cc->Inputs().HasTag("RESTART_POS")
                                         ? &(cc->Inputs().Tag("RESTART_POS"))
                                         : nullptr;
@@ -599,15 +620,49 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
     FastForwardStartPos(restart_pos_list, &fast_forward_boxes);
   }
 
+  if (!fast_forward_boxes.empty()) {
+    frame_num_since_reset_ = 0;
+    last_tracked_boxes_.clear();
+  }
+
+  // №№№ на самом деле перекрытия/выход за кадр/устаревание анализирует другой калькулятор TrackedDetectionManagerCalculator, и он присылает сюда "CANCEL_OBJECT_ID";
+  // №№№ убираем его из streaming_motion_boxes_, таким образом синхронизируем их с tracked_detection_manager_ в том калькуляторе
   InputStream* cancel_object_id_stream =
       cc->Inputs().HasTag("CANCEL_OBJECT_ID")
           ? &(cc->Inputs().Tag("CANCEL_OBJECT_ID"))
           : nullptr;
   if (cancel_object_id_stream && !cancel_object_id_stream->IsEmpty()) {
-    const int cancel_object_id = cancel_object_id_stream->Get<int>();
-    if (streaming_motion_boxes_.erase(cancel_object_id) == 0) {
-      LOG(WARNING) << "box id " << cancel_object_id << " does not exist.";
+    const auto cancel_ids = cancel_object_id_stream->Get<std::pair<int, int>>();
+    const int cancel_detection_id = cancel_ids.first;
+    const int successor_detection_id = cancel_ids.second;
+
+    LOG(WARNING) << "### Canceling the detection id " << cancel_detection_id;
+    const auto tracked_box_iter =
+        streaming_motion_boxes_.find(cancel_detection_id);
+    if (tracked_box_iter == streaming_motion_boxes_.end()) {
+      LOG(WARNING) << "box id " << cancel_detection_id << " does not exist.";
+    } else {
+      // Save a snapshot of latest tracking results before overriding with fast
+      // forwarded start pos.
+      auto & reset_box = streaming_motion_boxes_[successor_detection_id];
+
+      if (!reset_box.path.empty() &&
+          !tracked_box_iter->second.path.empty()) {
+        last_tracked_boxes_[successor_detection_id] =
+            std::make_pair(tracked_box_iter->second.path.back(),
+                           reset_box.path.back());
+      }
     }
+  }
+
+  const std::string packet_type = (!track_stream->IsEmpty() ? "TRACKING+TRACK_TIME" : (!start_pos_stream->IsEmpty() ? "START_POS" : (!cancel_object_id_stream->IsEmpty() ? "CANCEL_OBJECT_ID" : "UNKNOWN")));
+
+  {
+    std::string x = "### " + packet_type + " 1 fast_forward_boxes has ids {";
+    for (auto & box: fast_forward_boxes) {
+      x += std::to_string(box.first) + " ";
+    }
+    LOG(WARNING) << x;
   }
 
   cv::Mat input_view;
@@ -638,6 +693,14 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
   // this frame stores closest 1-2 states.
   std::vector<std::vector<MotionBoxState>> box_state_list;
   int64 timestamp_msec = timestamp.Value() / 1000;
+
+  {
+    std::string x = "### " + packet_type + " 2 streaming_motion_boxes_ has ids {";
+    for (auto & box: streaming_motion_boxes_) {
+      x += std::to_string(box.first) + " ";
+    }
+    LOG(WARNING) << x;
+  }
 
   if (box_tracker_) {  // Batch mode.
     // Ensure tracking has terminated.
@@ -671,6 +734,7 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
     // Streaming mode.
     // If track data is available advance all boxes by new data.
     if (!track_stream->IsEmpty()) {
+      // №№№ по новому опт. потоку обновляем все streaming_motion_boxes_
       const TrackingData& track_data = track_stream->Get<TrackingData>();
 
       if (visualize_tracking_data_) {
@@ -689,6 +753,7 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
                   &streaming_motion_boxes_, &failed_boxes);
 
       // Add fast forward boxes.
+      // №№№ а также добавляем к streaming_motion_boxes_ новые детекции
       if (!fast_forward_boxes.empty()) {
         for (const auto& box : fast_forward_boxes) {
           streaming_motion_boxes_.emplace(box.first, box.second);
@@ -697,10 +762,12 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
       }
 
       // Remove failed boxes.
+      // убираем боксы, где не справился сам трекинг (плохие фичи)
       for (int id : failed_boxes) {
         streaming_motion_boxes_.erase(id);
       }
 
+      // №№№ у нас нет INITIAL_POS, да и оно "NOT SUPPORTED ON MOBILE"
       // Init new boxes once data from previous time to current is available.
       for (const auto& pos : initial_pos_.box()) {
         if (timestamp_msec - pos.time_msec() >= 0 &&
@@ -733,11 +800,23 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
 
       ++frame_num_;
     } else {
+      // №№№ эта ветка не срабатывает, потому что track_time_stream и track_stream либо оба есть, либо обоих нет!
+
       // Track stream is empty, if anything is requested on track_time_stream
       // queue up requests.
+      // №№№ дан вход "TRACK_TIME:...", и мы просим предсказать боксы в соотв-ий момент (см сразу ниже).
+      // №№№ по сути тупо копируем времена TRACK_TIME в queued_track_requests_
       if (track_time_stream && !track_time_stream->IsEmpty()) {
         queued_track_requests_.push_back(timestamp);
       }
+    }
+
+    {
+      std::string x = "### " + packet_type + " 3 streaming_motion_boxes_ has ids {";
+      for (auto & box: streaming_motion_boxes_) {
+        x += std::to_string(box.first) + " ";
+      }
+      LOG(WARNING) << x;
     }
 
     // Can output be generated?
@@ -745,18 +824,25 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
       ++frame_num_since_reset_;
 
       // Generate results for queued up request.
+      // №№№ у нас никогда это не вызывается, потому что "else" вверху не срабатывает (track_time_stream и track_stream либо оба есть, либо обоих нет),
+      // №№№ и в свою очередь queued_track_requests_ всегда пуст
+      // №№№ если нас просили предсказать боксы в конкретный момент:
       if (cc->Outputs().HasTag("BOXES") && !queued_track_requests_.empty()) {
         for (int j = 0; j < queued_track_requests_.size(); ++j) {
           const Timestamp& past_time = queued_track_requests_[j];
+          // №№№ убеждаемся, что нас попросили предсказать в момент раньше нынешнего пакета (а то как мы предскажем будущее)
           RET_CHECK(past_time.Value() < timestamp.Value())
               << "Inconsistency, queued up requests should occur in past";
           std::unique_ptr<TimedBoxProtoList> past_box_list(
               new TimedBoxProtoList());
 
           for (auto& motion_box_path : streaming_motion_boxes_) {
+            // №№№ для каждого трекаемого бокса находим ближайший из истории (что за..!!)
             TimedBox result_box;
+            bool success =
             TimedBoxAtTime(motion_box_path.second.path,
                            past_time.Value() / 1000, &result_box, nullptr);
+            LOG(WARNING) << "### 1 TimedBoxAtTime returned " << (success ? "true" : "false");
 
             const float subframe_alpha =
                 static_cast<float>(j + 1) / (queued_track_requests_.size() + 1);
@@ -780,11 +866,21 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
       for (auto& motion_box_path : streaming_motion_boxes_) {
         TimedBox result_box;
         MotionBoxState result_state;
+        // №№№ интерполируем каждый бокс ко времени пакета
+
+        // LOG(WARNING) << "### Asking to interpolate path with time range ("
+        //   << motion_box_path.second.path.front().time_msec << " "
+        //   << motion_box_path.second.path.back().time_msec << ")"
+        //   << " at time (of packet?) " << timestamp_msec;
+        bool success =
         TimedBoxAtTime(motion_box_path.second.path, timestamp_msec, &result_box,
                        &result_state);
+        // LOG(WARNING) << "### 2 TimedBoxAtTime returned " << (success ? "true" : "false");
 
+        // №№№
         AddSmoothTransitionToOutputBox(motion_box_path.first, &result_box);
 
+        // №№№ наконец заполняем выход калькулятора (box_track_list)
         TimedBoxProto proto = result_box.ToProto();
         proto.set_id(motion_box_path.first);
         proto.set_reacquisition(motion_box_path.second.reacquisition);
@@ -798,28 +894,9 @@ void AddStateToPath(const MotionBoxState& state, int64 time_msec,
     // end streaming mode case.
   }
 
-  // Save a snapshot of latest tracking results before override with fast
-  // forwarded start pos.
-  if (!fast_forward_boxes.empty()) {
-    frame_num_since_reset_ = 0;
-    last_tracked_boxes_.clear();
-    // Add any remaining fast forward boxes. For example occurs if START_POS is
-    // specified with non-matching TRACKING mode
-    for (const auto& reset_box : fast_forward_boxes) {
-      const auto tracked_box_iter =
-          streaming_motion_boxes_.find(reset_box.first);
-      if (tracked_box_iter != streaming_motion_boxes_.end()) {
-        if (!reset_box.second.path.empty() &&
-            !tracked_box_iter->second.path.empty()) {
-          last_tracked_boxes_[reset_box.first] =
-              std::make_pair(tracked_box_iter->second.path.back(),
-                             reset_box.second.path.back());
-        }
-      }
-
-      // Override previous tracking with reset start pos.
-      streaming_motion_boxes_[reset_box.first] = reset_box.second;
-    }
+  for (const auto& reset_box : fast_forward_boxes) {
+    // Override previous tracking with reset start pos.
+    streaming_motion_boxes_[reset_box.first] = reset_box.second;
   }
 
   if (viz_frame) {
@@ -899,6 +976,14 @@ void BoxTrackerCalculator::AddSmoothTransitionToOutputBox(
     int box_id, TimedBox* result_box, float subframe_alpha) {
   if (options_.start_pos_transition_frames() > 0 &&
       frame_num_since_reset_ <= options_.start_pos_transition_frames()) {
+    {
+      std::string x = "### AddSmoothTransition: last_tracked_boxes_ has {";
+      for (auto & d: last_tracked_boxes_) {
+        x += std::to_string(d.first) + " ";
+      }
+      x += "}, and box_id is " + std::to_string(box_id);
+      LOG(WARNING) << x;
+    }
     const auto& box_iter = last_tracked_boxes_.find(box_id);
     if (box_iter != last_tracked_boxes_.end()) {
       // We first compute the blend of last tracked box with reset box at the
@@ -1202,15 +1287,20 @@ void BoxTrackerCalculator::FastForwardStartPos(
     // Locate corresponding frame number for starting position. As TrackingData
     // stores motion from current to last frame; we are using the data after
     // this frame for tracking.
+
+    // находим кадр из уже затреканных (для которых есть данные по flow), который первый после детекции
     auto timestamp_pos = std::lower_bound(track_timestamps_.begin(),
                                           track_timestamps_.end(), timestamp);
 
+    // если детекция новее всех кадров, то вставить её в initial_pos_
     if (timestamp_pos == track_timestamps_.end()) {
       LOG(WARNING) << "Received start pos beyond current timestamp, "
                    << "Starting to track once frame arrives.";
       *initial_pos_.add_box() = start_pos;
+      LOG(WARNING) << "### Fast forward finished at 'continue'";
       continue;
     }
+    LOG(WARNING) << "### Fast forward went beyond the warning";
 
     // Start at previous frame.
     const int init_frame = timestamp_pos - track_timestamps_.begin() +

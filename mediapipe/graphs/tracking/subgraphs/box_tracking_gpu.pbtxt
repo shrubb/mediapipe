@@ -117,10 +117,19 @@ node: {
           tracking_degrees: TRACKING_DEGREE_OBJECT_SCALE
           inlier_spring_force: 0.0
           static_motion_temporal_ratio: 3e-2
+
+          # Egor's experimental additions
+          max_track_failures: 10
+          cancel_tracking_with_occlusion_options: {
+            activated: false
+            min_motion_continuity: 0.4
+            min_inlier_ratio: 0.1
+          }
         }
       }
       visualize_tracking_data: false
       streaming_track_data_cache_size: 100
+      start_pos_transition_frames: 25
     }
   }
 }

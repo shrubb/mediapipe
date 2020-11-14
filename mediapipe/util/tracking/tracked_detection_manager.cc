@@ -43,9 +43,9 @@ bool AreCornersOutOfView(const TrackedDetection& object) {
 
 namespace mediapipe {
 
-std::vector<int> TrackedDetectionManager::AddDetection(
+std::vector<std::pair<int, int>> TrackedDetectionManager::AddDetection(
     std::unique_ptr<TrackedDetection> detection) {
-  std::vector<int> ids_to_remove;
+  std::vector<std::pair<int, int>> ids_to_remove;
 
   int64 latest_duplicate_timestamp = 0;
   // TODO: All detections should be fastforwarded to the current
@@ -67,29 +67,32 @@ std::vector<int> TrackedDetectionManager::AddDetection(
       if (existing_detection.initial_timestamp() > latest_duplicate_timestamp) {
         latest_duplicate_timestamp = existing_detection.initial_timestamp();
         if (existing_detection.previous_id() == -1) {
+          // LOG(WARNING) << "### Existing detection had previous id " << std::to_string(existing_detection.previous_id()) << ", setting to " << std::to_string(existing_detection.unique_id());
           detection->set_previous_id(existing_detection.unique_id());
         } else {
+          // LOG(WARNING) << "### Existing detection had previous id " << std::to_string(existing_detection.previous_id()) << ", re-assigning it to new detection";
           detection->set_previous_id(existing_detection.previous_id());
         }
       }
-      ids_to_remove.push_back(existing_detection_ptr.first);
+      ids_to_remove.emplace_back(
+        existing_detection_ptr.first, detection->unique_id());
     }
   }
   // Erase old detections.
   for (auto id : ids_to_remove) {
-    detections_.erase(id);
+    detections_.erase(id.first);
   }
   const int id = detection->unique_id();
   detections_[id] = std::move(detection);
   return ids_to_remove;
 }
 
-std::vector<int> TrackedDetectionManager::UpdateDetectionLocation(
+std::vector<std::pair<int, int>> TrackedDetectionManager::UpdateDetectionLocation(
     int id, const NormalizedRect& bounding_box, int64 timestamp) {
   // TODO: Remove all boxes that are not updating.
   auto detection_ptr = detections_.find(id);
   if (detection_ptr == detections_.end()) {
-    return std::vector<int>();
+    return std::vector<std::pair<int, int>>();
   }
   auto& detection = *detection_ptr->second;
   detection.set_bounding_box(bounding_box);
@@ -102,35 +105,35 @@ std::vector<int> TrackedDetectionManager::UpdateDetectionLocation(
   return RemoveDuplicatedDetections(detection.unique_id());
 }
 
-std::vector<int> TrackedDetectionManager::RemoveObsoleteDetections(
+std::vector<std::pair<int, int>> TrackedDetectionManager::RemoveObsoleteDetections(
     int64 timestamp) {
-  std::vector<int> ids_to_remove;
+  std::vector<std::pair<int, int>> ids_to_remove;
   for (auto& existing_detection : detections_) {
     if (existing_detection.second->last_updated_timestamp() < timestamp) {
-      ids_to_remove.push_back(existing_detection.first);
+      ids_to_remove.emplace_back(existing_detection.first, -1);
     }
   }
   for (auto idx : ids_to_remove) {
-    detections_.erase(idx);
+    detections_.erase(idx.first);
   }
   return ids_to_remove;
 }
 
-std::vector<int> TrackedDetectionManager::RemoveOutOfViewDetections() {
-  std::vector<int> ids_to_remove;
+std::vector<std::pair<int, int>> TrackedDetectionManager::RemoveOutOfViewDetections() {
+  std::vector<std::pair<int, int>> ids_to_remove;
   for (auto& existing_detection : detections_) {
     if (AreCornersOutOfView(*existing_detection.second)) {
-      ids_to_remove.push_back(existing_detection.first);
+      ids_to_remove.emplace_back(existing_detection.first, -1);
     }
   }
   for (auto idx : ids_to_remove) {
-    detections_.erase(idx);
+    detections_.erase(idx.first);
   }
   return ids_to_remove;
 }
 
-std::vector<int> TrackedDetectionManager::RemoveDuplicatedDetections(int id) {
-  std::vector<int> ids_to_remove;
+std::vector<std::pair<int, int>> TrackedDetectionManager::RemoveDuplicatedDetections(int id) {
+  std::vector<std::pair<int, int>> ids_to_remove;
   auto detection_ptr = detections_.find(id);
   if (detection_ptr == detections_.end()) {
     return ids_to_remove;
@@ -157,11 +160,11 @@ std::vector<int> TrackedDetectionManager::RemoveDuplicatedDetections(int id) {
           if (latest_detection->initial_timestamp() >=
               other.initial_timestamp()) {
             // Removes the earlier one.
-            ids_to_remove.push_back(other.unique_id());
+            ids_to_remove.emplace_back(other.unique_id(), detection.unique_id());
             detection_to_remove = existing_detection.second.get();
             latest_detection->MergeLabelScore(other);
           } else {
-            ids_to_remove.push_back(latest_detection->unique_id());
+            ids_to_remove.emplace_back(latest_detection->unique_id(), detection.unique_id());
             detection_to_remove = latest_detection;
             existing_detection.second->MergeLabelScore(*latest_detection);
             latest_detection = existing_detection.second.get();
@@ -187,7 +190,7 @@ std::vector<int> TrackedDetectionManager::RemoveDuplicatedDetections(int id) {
   }
 
   for (auto idx : ids_to_remove) {
-    detections_.erase(idx);
+    detections_.erase(idx.first);
   }
   return ids_to_remove;
 }
