@@ -1043,3 +1043,16 @@ cc_library(
     ],
     alwayslink = 1,
 )
+
+cc_library(
+    name = "single_detection_calculator",
+    srcs = ["single_detection_calculator.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//mediapipe/framework:calculator_framework",
+        "//mediapipe/framework/formats:detection_cc_proto",
+        "//mediapipe/framework/port:ret_check",
+        "//mediapipe/framework/port:status",
+    ],
+    alwayslink = 1,
+)

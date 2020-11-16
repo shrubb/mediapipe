@@ -6,9 +6,9 @@ input_stream: "VIDEO:input_video"
 input_stream: "DETECTIONS:new_detections"
 output_stream: "DETECTIONS:tracked_detections"
 
-# Assigns an unique id for each new detection.
+# Removes all detections but one, and hard-assigns it id = 1
 node {
-  calculator: "DetectionUniqueIdCalculator"
+  calculator: "SingleDetectionCalculator"
   input_stream: "DETECTIONS:new_detections"
   output_stream: "DETECTIONS:detections_with_id"
 }

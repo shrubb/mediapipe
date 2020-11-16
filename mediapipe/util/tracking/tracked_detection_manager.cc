@@ -72,7 +72,11 @@ std::vector<int> TrackedDetectionManager::AddDetection(
           detection->set_previous_id(existing_detection.previous_id());
         }
       }
-      ids_to_remove.push_back(existing_detection_ptr.first);
+      // Unfortunately, this check is required in assumption that `unique_id`s
+      // are OBJECT ids, not detection ids
+      if (existing_detection_ptr.first != detection->unique_id()) {
+        ids_to_remove.push_back(existing_detection_ptr.first);
+      }
     }
   }
   // Erase old detections.

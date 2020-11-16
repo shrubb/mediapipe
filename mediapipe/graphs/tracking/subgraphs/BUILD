@@ -55,7 +55,8 @@ mediapipe_simple_subgraph(
     graph = "object_tracking_gpu.pbtxt",
     register_as = "ObjectTrackingSubgraphGpu",
     deps = [
-        "//mediapipe/calculators/util:detection_unique_id_calculator",
+      # "//mediapipe/calculators/util:detection_unique_id_calculator",
+        "//mediapipe/calculators/util:single_detection_calculator",
         "//mediapipe/calculators/util:detections_to_timed_box_list_calculator",
         "//mediapipe/calculators/video:tracked_detection_manager_calculator",
         "//mediapipe/framework/stream_handler:sync_set_input_stream_handler",
